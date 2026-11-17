@@ -1,555 +1,325 @@
-// Emberfall — canvas rendering. Every pixel of the game is drawn here from the
-// world state: the grove, the Heart Tree, the wisp, the fiends, the HUD and
-// the menus. Nothing in this file mutates the world except its own small
-// cosmetic state (banner timer, ambient fireflies).
+// Nova Salvage — all canvas drawing (vivid nebula, parallax starfield, bright crystals).
 import { CONFIG } from './config.js';
 
-export function createRenderer(canvas) {
-  const ctx = canvas.getContext('2d');
-  const render = {
-    banner: '',
-    bannerTimer: 0,
-    lastWave: 0,
-    fireflies: [],
-  };
+const C = CONFIG;
+const TAU = Math.PI * 2;
 
-  for (let i = 0; i < 46; i++) {
-    render.fireflies.push({
-      x: Math.random() * CONFIG.world.width,
-      y: Math.random() * CONFIG.world.height,
-      phase: Math.random() * Math.PI * 2,
-      speed: 0.4 + Math.random() * 0.9,
-      size: 1 + Math.random() * 2,
+function rr(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function glow(ctx, x, y, radius, color, alpha) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  g.addColorStop(0, color);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = g;
+  ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  ctx.globalAlpha = 1;
+}
+function text(ctx, s, x, y, size, color, weight = 700, align = 'center') {
+  ctx.font = `${weight} ${size}px system-ui, sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.fillText(s, x, y);
+}
+
+export function createRenderer() {
+  const stars = [];
+  for (let i = 0; i < 3; i++) {
+    const layer = [];
+    for (let j = 0; j < 60; j++) layer.push({ x: (j * 131 + i * 47) % 1280, y: (j * 89 + i * 211) % 720, r: 0.8 + ((j + i) % 3) * 0.7, p: (j * 0.9 + i) % TAU });
+    stars.push(layer);
+  }
+  const nebulas = [
+    { x: 220, y: 140, r: 300, c: 'rgba(150, 60, 220, 0.20)' },
+    { x: 1080, y: 560, r: 340, c: 'rgba(40, 120, 255, 0.18)' },
+    { x: 950, y: 120, r: 240, c: 'rgba(255, 60, 140, 0.14)' },
+    { x: 300, y: 600, r: 260, c: 'rgba(0, 220, 200, 0.12)' },
+  ];
+
+  function drawBackground(ctx, s) {
+    const g = ctx.createLinearGradient(0, 0, 1280, 720);
+    g.addColorStop(0, '#160a2e');
+    g.addColorStop(0.5, '#0d1033');
+    g.addColorStop(1, '#0a0618');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 1280, 720);
+    for (const n of nebulas) glow(ctx, n.x, n.y, n.r, n.c, 1);
+    // parallax starfield drifts with the ship
+    const px = (s.ship ? s.ship.x - 640 : 0);
+    const py = (s.ship ? s.ship.y - 360 : 0);
+    stars.forEach((layer, li) => {
+      const f = 0.02 * (li + 1);
+      for (const st of layer) {
+        const x = (((st.x - px * f) % 1280) + 1280) % 1280;
+        const y = (((st.y - py * f) % 720) + 720) % 720;
+        ctx.globalAlpha = 0.4 + 0.4 * Math.sin(s.time * 1.5 + st.p);
+        ctx.fillStyle = li === 2 ? '#cfe8ff' : '#ffffff';
+        ctx.beginPath(); ctx.arc(x, y, st.r, 0, TAU); ctx.fill();
+      }
     });
-  }
-
-  function glowCircle(x, y, radius, color, alpha) {
-    const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    g.addColorStop(0, color);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
     ctx.globalAlpha = 1;
   }
 
-  function drawBackground(world) {
-    const w = CONFIG.world.width;
-    const h = CONFIG.world.height;
-    const g = ctx.createRadialGradient(640, 400, 60, 640, 400, 760);
-    g.addColorStop(0, '#1d2f24');
-    g.addColorStop(0.55, '#101d16');
-    g.addColorStop(1, '#060b08');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-
-    // Distant tree silhouettes around the rim.
-    ctx.fillStyle = '#0a1410';
-    for (let i = 0; i < 26; i++) {
-      const a = (i / 26) * Math.PI * 2;
-      const x = 640 + Math.cos(a) * 660;
-      const y = 400 + Math.sin(a) * 430;
+  function drawShip(ctx, s) {
+    const p = s.ship;
+    glow(ctx, p.x, p.y, 56, 'rgba(90, 220, 255, 0.35)', 1);
+    // engine flame
+    const thrusting = Math.hypot(p.vx, p.vy) > 60;
+    if (thrusting) {
+      const back = Math.atan2(p.vy, p.vx) + Math.PI;
+      const fl = 14 + 8 * Math.sin(s.time * 30);
+      ctx.fillStyle = '#ff9a3d';
       ctx.beginPath();
-      ctx.moveTo(x - 26, y + 60);
-      ctx.lineTo(x, y - 90 - (i % 3) * 26);
-      ctx.lineTo(x + 26, y + 60);
-      ctx.closePath();
-      ctx.fill();
+      ctx.moveTo(p.x + Math.cos(back + 0.4) * 10, p.y + Math.sin(back + 0.4) * 10);
+      ctx.lineTo(p.x + Math.cos(back) * (18 + fl), p.y + Math.sin(back) * (18 + fl));
+      ctx.lineTo(p.x + Math.cos(back - 0.4) * 10, p.y + Math.sin(back - 0.4) * 10);
+      ctx.closePath(); ctx.fill();
     }
-
-    // Fireflies drift through the grove.
-    for (const f of render.fireflies) {
-      f.phase += 0.016 * f.speed;
-      const alpha = 0.25 + 0.45 * (0.5 + 0.5 * Math.sin(f.phase * 2));
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#cfe8a0';
-      ctx.beginPath();
-      ctx.arc(f.x + Math.sin(f.phase) * 12, f.y + Math.cos(f.phase * 0.7) * 8, f.size, 0, Math.PI * 2);
-      ctx.fill();
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.aim);
+    if (s.invuln > 0 && Math.floor(s.time * 12) % 2 === 0) ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#e8f6ff';
+    ctx.beginPath();
+    ctx.moveTo(20, 0); ctx.lineTo(-12, -11); ctx.lineTo(-6, 0); ctx.lineTo(-12, 11);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#38b6ff';
+    ctx.beginPath(); ctx.arc(2, 0, 5, 0, TAU); ctx.fill();
+    ctx.restore();
+    // shield ring
+    if (s.shield > 0) {
+      ctx.strokeStyle = `rgba(90, 200, 255, ${0.25 + 0.45 * (s.shield / s.shieldMax)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.radius + 8, 0, TAU); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
-
-    // Soft light pooling around the Heart Tree.
-    glowCircle(CONFIG.tree.x, CONFIG.tree.y, 260, 'rgba(120,255,170,0.20)', 0.5);
   }
 
-  function drawTree(world) {
-    const t = CONFIG.tree;
-    const pulse = 1 + 0.05 * Math.sin(world.time * 2.2);
-    const hpFrac = world.tree.hp / CONFIG.tree.maxHp;
-
-    // Trunk.
-    ctx.strokeStyle = '#5d4126';
-    ctx.lineWidth = 16;
-    ctx.lineCap = 'round';
+  function drawAsteroid(ctx, a) {
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(a.rot);
+    glow(ctx, 0, 0, a.radius * 1.8, 'rgba(255, 150, 80, 0.25)', 1);
+    ctx.fillStyle = a.size === 'big' ? '#8a5a3b' : a.size === 'medium' ? '#9a6a44' : '#a87a52';
+    ctx.strokeStyle = '#ffcf9a';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(t.x, t.y + 46);
-    ctx.quadraticCurveTo(t.x - 8, t.y + 10, t.x, t.y - 6);
-    ctx.stroke();
-    ctx.strokeStyle = '#7a5a35';
-    ctx.lineWidth = 9;
-    ctx.beginPath();
-    ctx.moveTo(t.x, t.y + 20);
-    ctx.quadraticCurveTo(t.x - 22, t.y - 6, t.x - 30, t.y - 26);
-    ctx.moveTo(t.x, t.y + 14);
-    ctx.quadraticCurveTo(t.x + 22, t.y - 10, t.x + 32, t.y - 30);
-    ctx.stroke();
-
-    // Canopy: three overlapping crowns, glowing green.
-    glowCircle(t.x, t.y - 34, 66 * pulse, 'rgba(110,255,160,0.55)', 0.9);
-    ctx.fillStyle = '#2f9e5f';
-    ctx.beginPath();
-    ctx.arc(t.x - 26, t.y - 30, 30, 0, Math.PI * 2);
-    ctx.arc(t.x + 26, t.y - 30, 30, 0, Math.PI * 2);
-    ctx.arc(t.x, t.y - 52, 34, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#46c47c';
-    ctx.beginPath();
-    ctx.arc(t.x - 12, t.y - 44, 20, 0, Math.PI * 2);
-    ctx.arc(t.x + 14, t.y - 40, 17, 0, Math.PI * 2);
-    ctx.fill();
-
-    // The heart: a warm core that beats and dims as the tree weakens.
-    const heartAlpha = 0.35 + 0.65 * hpFrac;
-    ctx.globalAlpha = heartAlpha;
-    glowCircle(t.x, t.y - 6, 26 * pulse, 'rgba(255,214,120,0.9)', 0.9);
-    ctx.fillStyle = '#ffd678';
-    ctx.beginPath();
-    ctx.arc(t.x, t.y - 6, 9 * pulse, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // HP ring around the tree.
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-    ctx.beginPath();
-    ctx.arc(t.x, t.y, t.radius + 12, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = hpFrac > 0.5 ? '#7dff9e' : hpFrac > 0.25 ? '#ffd23d' : '#ff5d5d';
-    ctx.beginPath();
-    ctx.arc(t.x, t.y, t.radius + 12, -Math.PI / 2, -Math.PI / 2 + hpFrac * Math.PI * 2);
-    ctx.stroke();
-
-    // Danger ring: when a fiend closes in on the tree, a red pulse warns the
-    // player to look back at the grove's heart.
-    let nearest = Infinity;
-    for (const e of world.enemies) {
-      nearest = Math.min(nearest, Math.hypot(e.x - t.x, e.y - t.y));
+    for (let i = 0; i < a.verts.length; i++) {
+      const ang = (i / a.verts.length) * TAU;
+      const r = a.radius * a.verts[i];
+      i ? ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r) : ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * r);
     }
-    if (nearest < 170) {
-      const pulse = 0.35 + 0.3 * Math.sin(world.time * 8);
-      ctx.globalAlpha = pulse;
-      ctx.strokeStyle = '#ff5d5d';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(t.x, t.y, t.radius + 26, 0, Math.PI * 2);
-      ctx.stroke();
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.arc(-a.radius * 0.25, -a.radius * 0.2, a.radius * 0.22, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(a.radius * 0.3, a.radius * 0.25, a.radius * 0.16, 0, TAU); ctx.fill();
+    ctx.restore();
+    if (a.hp < a.maxHp) {
+      const w = a.radius * 1.6;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(a.x - w / 2, a.y - a.radius - 10, w, 4);
+      ctx.fillStyle = '#ffb37a';
+      ctx.fillRect(a.x - w / 2, a.y - a.radius - 10, w * (a.hp / a.maxHp), 4);
+    }
+  }
+
+  function drawDrone(ctx, d, s) {
+    glow(ctx, d.x, d.y, 34, 'rgba(255, 60, 120, 0.35)', 1);
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    if (d.flash > 0) ctx.globalAlpha = 0.75;
+    ctx.fillStyle = '#ff4d7e';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) { const a = (i / 6) * TAU + s.time; i ? ctx.lineTo(Math.cos(a) * d.radius, Math.sin(a) * d.radius) : ctx.moveTo(Math.cos(a) * d.radius, Math.sin(a) * d.radius); }
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#c40e42';
+    ctx.beginPath(); ctx.arc(0, 0, 2, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCrystals(ctx, s) {
+    for (const cr of s.crystals) {
+      const bob = Math.sin(cr.t * 3) * 3;
+      const blink = cr.life < 4 ? (Math.sin(cr.t * 10) > 0 ? 1 : 0.35) : 1;
+      ctx.globalAlpha = blink;
+      const col = cr.kind === 'gold' ? '#ffd23d' : '#7df9ff';
+      glow(ctx, cr.x, cr.y + bob, 24, col, 0.55);
+      ctx.save();
+      ctx.translate(cr.x, cr.y + bob);
+      ctx.rotate(Math.PI / 4 + Math.sin(cr.t * 2) * 0.3);
+      ctx.fillStyle = col;
+      const r = cr.value >= 3 ? 11 : 8;
+      ctx.fillRect(-r / 1.4, -r / 1.4, r * 1.4, r * 1.4);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(-r / 3, -r / 3, r / 1.5, r / 1.5);
+      ctx.restore();
       ctx.globalAlpha = 1;
     }
   }
 
-  function drawPlayer(world) {
-    const p = world.player;
-    glowCircle(p.x, p.y, 46, 'rgba(140,220,255,0.5)', 0.8);
-    // Aim line, faint, so the player can see where shots go.
-    ctx.strokeStyle = 'rgba(180,235,255,0.28)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 10]);
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x + Math.cos(p.angle) * 64, p.y + Math.sin(p.angle) * 64);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // Wisp body: a bright core with a little tail flame.
-    ctx.fillStyle = '#bfefff';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#7dd8ff';
-    ctx.beginPath();
-    ctx.arc(p.x - Math.cos(p.angle) * 16, p.y - Math.sin(p.angle) * 16, 5, 0, Math.PI * 2);
-    ctx.fill();
+  function drawHud(ctx, s) {
+    text(ctx, `SCORE ${s.score}`, 28, 34, 30, '#fff6c9', 800, 'left');
+    text(ctx, `BEST ${Math.max(s.best, s.score)}`, 28, 62, 16, 'rgba(255,255,255,0.65)', 600, 'left');
+    if (s.mult > 1) text(ctx, `COMBO x${s.mult.toFixed(2).replace(/\.?0+$/, '')}`, 28, 92, 22, '#ffd23d', 800, 'left');
+    text(ctx, `SECTOR ${Math.max(1, s.sector)} / 5`, 640, 34, 26, '#ffffff', 800);
+    // quota progress bar
+    const qw = 260;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    rr(ctx, 640 - qw / 2, 52, qw, 14, 7); ctx.fill();
+    const frac = Math.min(1, s.collected / Math.max(1, s.quota));
+    ctx.fillStyle = '#7df9ff';
+    rr(ctx, 640 - qw / 2, 52, qw * frac, 14, 7); ctx.fill();
+    text(ctx, `◆ ${Math.min(s.collected, s.quota)} / ${s.quota} crystals`, 640, 84, 15, '#bff6ff', 700);
+    // hull + shield top-right
+    text(ctx, 'HULL', 1252, 26, 15, '#ffb3ab', 700, 'right');
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    rr(ctx, 1062, 36, 190, 14, 7); ctx.fill();
+    const hf = Math.max(0, s.hull / s.hullMax);
+    ctx.fillStyle = hf > 0.5 ? '#5dff9a' : hf > 0.25 ? '#ffd23d' : '#ff5d5d';
+    rr(ctx, 1062, 36, 190 * hf, 14, 7); ctx.fill();
+    text(ctx, 'SHIELD', 1252, 66, 15, '#7dd7ff', 700, 'right');
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    rr(ctx, 1062, 76, 190, 10, 5); ctx.fill();
+    ctx.fillStyle = '#38b6ff';
+    rr(ctx, 1062, 76, 190 * Math.max(0, s.shield / s.shieldMax), 10, 5); ctx.fill();
+    if (s.banner > 0 && s.mode === 'playing') {
+      ctx.globalAlpha = Math.min(1, s.banner);
+      text(ctx, s.bannerText, 640, 300, 44, '#bff6ff', 900);
+      ctx.globalAlpha = 1;
+    }
+    text(ctx, 'WASD thrust · mouse aim · hold click to shoot · P pause · M mute', 640, 700, 14, 'rgba(255,255,255,0.45)', 600);
   }
 
-  function drawEnemy(e, world) {
-    const def = CONFIG.enemies[e.kind];
-    if (e.hitFlash > 0) glowCircle(e.x, e.y, e.radius + 14, 'rgba(255,255,255,0.8)', 0.7);
-    glowCircle(e.x, e.y, e.radius + 16, def.color, 0.35);
-    ctx.fillStyle = def.color;
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 2;
-    if (e.kind === 'bulwark') {
-      // Armoured hexagon.
-      ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 + world.time * 0.6;
-        const px = e.x + Math.cos(a) * e.radius;
-        const py = e.y + Math.sin(a) * e.radius;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = '#2a1040';
-      ctx.beginPath();
-      ctx.arc(e.x, e.y, e.radius * 0.45, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (e.kind === 'swift') {
-      // A dart: triangle pointing at the tree.
-      const a = Math.atan2(CONFIG.tree.y - e.y, CONFIG.tree.x - e.x);
-      ctx.save();
-      ctx.translate(e.x, e.y);
-      ctx.rotate(a);
-      ctx.beginPath();
-      ctx.moveTo(e.radius + 6, 0);
-      ctx.lineTo(-e.radius, -e.radius * 0.8);
-      ctx.lineTo(-e.radius * 0.4, 0);
-      ctx.lineTo(-e.radius, e.radius * 0.8);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    } else if (e.kind === 'splitter') {
-      // Two lobes, ready to split.
-      ctx.beginPath();
-      ctx.arc(e.x - e.radius * 0.45, e.y, e.radius * 0.62, 0, Math.PI * 2);
-      ctx.arc(e.x + e.radius * 0.45, e.y, e.radius * 0.62, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#3d0a14';
-      ctx.beginPath();
-      ctx.arc(e.x - e.radius * 0.45, e.y, 3, 0, Math.PI * 2);
-      ctx.arc(e.x + e.radius * 0.45, e.y, 3, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // Ember and mote: a round ember with a hot core and a flickering edge.
-      const flicker = 1 + 0.12 * Math.sin(world.time * 9 + e.wobble * 3);
-      ctx.beginPath();
-      ctx.arc(e.x, e.y, e.radius * flicker, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff3c4';
-      ctx.beginPath();
-      ctx.arc(e.x, e.y, e.radius * 0.45, 0, Math.PI * 2);
-      ctx.fill();
+  function drawWorld(ctx, s) {
+    drawBackground(ctx, s);
+    drawCrystals(ctx, s);
+    for (const b of s.ebolts) {
+      glow(ctx, b.x, b.y, 15, '#ff4d7e', 0.6);
+      ctx.fillStyle = '#ff8ab0';
+      ctx.beginPath(); ctx.arc(b.x, b.y, 5.5, 0, TAU); ctx.fill();
     }
-    // Eyes: two dark dots tracking the tree.
-    const a = Math.atan2(CONFIG.tree.y - e.y, CONFIG.tree.x - e.x);
-    const ex = Math.cos(a) * e.radius * 0.3;
-    const ey = Math.sin(a) * e.radius * 0.3;
-    ctx.fillStyle = '#1c0a00';
-    ctx.beginPath();
-    ctx.arc(e.x + ex - 4, e.y + ey - 3, 2.4, 0, Math.PI * 2);
-    ctx.arc(e.x + ex + 4, e.y + ey - 3, 2.4, 0, Math.PI * 2);
-    ctx.fill();
-    // Health pips for tough enemies.
-    if (e.maxHp > 1) {
-      ctx.fillStyle = 'rgba(255,255,255,0.75)';
-      for (let i = 0; i < e.maxHp; i++) {
-        ctx.beginPath();
-        ctx.arc(e.x - (e.maxHp - 1) * 5 + i * 10, e.y - e.radius - 10, 2.6, 0, Math.PI * 2);
-        ctx.fill();
-        if (i >= e.hp) {
-          ctx.fillStyle = 'rgba(255,255,255,0.22)';
-        }
-      }
-    }
-  }
-
-  function drawBullets(world) {
-    for (const b of world.bullets) {
-      glowCircle(b.x, b.y, 16, 'rgba(150,230,255,0.7)', 0.8);
-      ctx.strokeStyle = '#dff7ff';
+    for (const b of s.bolts) {
+      ctx.strokeStyle = '#aef3ff';
       ctx.lineWidth = 4;
       ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, TAU); ctx.fill();
     }
-  }
-
-  function drawPickups(world) {
-    for (const p of world.pickups) {
-      const bobY = Math.sin(p.bob) * 4;
-      const blink = p.life < 2 ? (Math.sin(world.time * 12) > 0 ? 1 : 0.35) : 1;
-      ctx.globalAlpha = blink;
-      const colors = { rapid: '#7df9ff', spread: '#c9a7ff', mend: '#8dff9e', star: '#ffd23d' };
-      const color = colors[p.kind];
-      glowCircle(p.x, p.y + bobY, 26, color, 0.55);
-      ctx.fillStyle = 'rgba(6,12,9,0.85)';
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y + bobY, 14, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = color;
-      ctx.font = 'bold 15px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const glyph = { rapid: '»', spread: '✦', mend: '+', star: '★' }[p.kind];
-      ctx.fillText(glyph, p.x, p.y + bobY + 1);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  function drawParticles(world) {
-    for (const p of world.particles) {
-      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-      ctx.fill();
+    for (const a of s.asteroids) drawAsteroid(ctx, a);
+    for (const d of s.drones) drawDrone(ctx, d, s);
+    if (s.mode !== 'gameover') drawShip(ctx, s);
+    for (const pt of s.particles) {
+      ctx.globalAlpha = Math.max(0, pt.life / pt.maxLife);
+      ctx.fillStyle = pt.color;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, TAU); ctx.fill();
     }
     ctx.globalAlpha = 1;
-  }
-
-  function drawFloaters(world) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const f of world.floaters) {
-      ctx.globalAlpha = Math.max(0, f.life / f.maxLife);
-      ctx.font = 'bold 17px sans-serif';
-      ctx.fillStyle = f.color;
-      ctx.fillText(f.text, f.x, f.y);
+    for (const f of s.floats) {
+      ctx.globalAlpha = Math.max(0, f.life);
+      text(ctx, f.text, f.x, f.y, 18, f.color, 800);
     }
     ctx.globalAlpha = 1;
+    drawHud(ctx, s);
   }
 
-  function drawHud(world) {
-    // Low-health warning: a red vignette pulses at the screen edges while
-    // the tree is nearly gone, so the danger reads even mid-fight.
-    const treeFrac = world.tree.hp / CONFIG.tree.maxHp;
-    if (treeFrac < 0.3 && world.phase === 'playing') {
-      const pulse = 0.1 + 0.12 * (0.5 + 0.5 * Math.sin(world.time * 6));
-      const vg = ctx.createRadialGradient(640, 400, 300, 640, 400, 720);
-      vg.addColorStop(0, 'rgba(255,40,40,0)');
-      vg.addColorStop(1, 'rgba(255,40,40,' + pulse.toFixed(3) + ')');
-      ctx.fillStyle = vg;
-      ctx.fillRect(0, 0, CONFIG.world.width, CONFIG.world.height);
-    }
-    ctx.textBaseline = 'alphabetic';
-    // Top-left: score and best.
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = 'bold 26px sans-serif';
-    ctx.fillText('SCORE ' + world.score, 22, 40);
-    ctx.font = '16px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fillText('BEST ' + Math.max(world.best, world.score), 22, 64);
-
-    // Top-centre: wave.
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = 'bold 22px sans-serif';
-    ctx.fillText('WAVE ' + Math.max(1, world.wave), 640, 38);
-    const left = world.waveState === 'spawning'
-      ? world.spawnQueue.length + ' incoming'
-      : world.waveState === 'between'
-        ? 'next wave soon'
-        : world.enemies.length + ' fiends left';
-    ctx.font = '14px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fillText(left, 640, 60);
-
-    // Top-right: tree HP bar.
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 15px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('HEART TREE', 1258, 26);
-    const barW = 190;
-    const barX = 1258 - barW;
-    ctx.fillStyle = 'rgba(255,255,255,0.18)';
-    ctx.fillRect(barX, 34, barW, 14);
-    const hpFrac = world.tree.hp / CONFIG.tree.maxHp;
-    ctx.fillStyle = hpFrac > 0.5 ? '#7dff9e' : hpFrac > 0.25 ? '#ffd23d' : '#ff5d5d';
-    ctx.fillRect(barX, 34, barW * hpFrac, 14);
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = '13px sans-serif';
-    ctx.fillText(world.tree.hp + ' / ' + CONFIG.tree.maxHp, 1258, 66);
-
-    // Combo multiplier under the score.
-    if (world.multiplier > 1) {
-      ctx.textAlign = 'left';
-      ctx.fillStyle = '#ffd23d';
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillText('COMBO x' + world.multiplier, 22, 96);
-    }
-
-    // Active weapon timers, bottom-left.
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 15px sans-serif';
-    let ty = 770;
-    if (world.rapidTimer > 0) {
-      ctx.fillStyle = '#7df9ff';
-      ctx.fillText('RAPID ' + Math.ceil(world.rapidTimer) + 's', 22, ty);
-      ty -= 22;
-    }
-    if (world.spreadTimer > 0) {
-      ctx.fillStyle = '#c9a7ff';
-      ctx.fillText('SPREAD ' + Math.ceil(world.spreadTimer) + 's', 22, ty);
-    }
-
-    // Controls hint, bottom-right.
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.font = '13px sans-serif';
-    ctx.fillText('WASD move · mouse aim · hold click to shoot · P pause · M mute', 1258, 778);
-  }
-
-  function drawBanner(world) {
-    if (world.wave !== render.lastWave) {
-      render.lastWave = world.wave;
-      if (world.wave > 0 && world.phase === 'playing') {
-        render.banner = 'WAVE ' + world.wave;
-        render.bannerTimer = 1.8;
-      }
-    }
-    if (render.bannerTimer > 0) {
-      render.bannerTimer -= 1 / 60;
-      const alpha = Math.min(1, render.bannerTimer);
-      ctx.globalAlpha = alpha;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#ffe9a8';
-      ctx.font = 'bold 54px sans-serif';
-      ctx.fillText(render.banner, 640, 170);
-      ctx.globalAlpha = 1;
-    }
-  }
-
-  function panel(x, y, w, h) {
-    ctx.fillStyle = 'rgba(4,10,7,0.78)';
-    ctx.strokeStyle = 'rgba(150,255,190,0.25)';
+  function panel(ctx, x, y, w, h) {
+    ctx.fillStyle = 'rgba(10, 8, 32, 0.88)';
+    rr(ctx, x, y, w, h, 18); ctx.fill();
+    ctx.strokeStyle = 'rgba(125, 249, 255, 0.45)';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, 18);
-    ctx.fill();
-    ctx.stroke();
+    rr(ctx, x, y, w, h, 18); ctx.stroke();
   }
 
-  function drawTitle(world) {
-    ctx.fillStyle = 'rgba(3,8,5,0.45)';
-    ctx.fillRect(0, 0, CONFIG.world.width, CONFIG.world.height);
-    panel(340, 150, 600, 500);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#8dff9e';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('A TINY GUARDIAN TALE', 640, 205);
-    ctx.fillStyle = '#ffe9a8';
-    ctx.font = 'bold 72px sans-serif';
-    ctx.fillText('EMBERFALL', 640, 285);
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = '18px sans-serif';
-    ctx.fillText('The Heart Tree is the last light in the grove.', 640, 330);
-    ctx.fillText('Ember fiends crawl in from the dark to eat it.', 640, 356);
-    ctx.fillText('You are the wisp that stands between them.', 640, 382);
-    ctx.fillStyle = '#bfefff';
-    ctx.font = 'bold 17px sans-serif';
-    ctx.fillText('WASD / arrows — move      Mouse — aim', 640, 440);
-    ctx.fillText('Hold click — shoot      P — pause      M — mute', 640, 468);
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.font = '15px sans-serif';
-    ctx.fillText('Kills build a combo multiplier. Fiends drop pickups.', 640, 506);
-    ctx.fillText('If a fiend touches the tree, the tree burns.', 640, 528);
-    ctx.fillStyle = '#ffd23d';
-    ctx.font = 'bold 24px sans-serif';
-    const blink = 0.65 + 0.35 * Math.sin(world.time * 4);
-    ctx.globalAlpha = blink;
-    ctx.fillText('CLICK OR PRESS ENTER TO PLAY', 640, 592);
-    ctx.globalAlpha = 1;
-    if (world.best > 0) {
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
-      ctx.font = '15px sans-serif';
-      ctx.fillText('Best score: ' + world.best, 640, 626);
-    }
+  function drawTitle(ctx, s) {
+    drawBackground(ctx, s);
+    // decorative: ship + crystals + asteroids behind the panel
+    glow(ctx, 640, 360, 200, 'rgba(125, 249, 255, 0.15)', 1);
+    panel(ctx, 320, 120, 640, 480);
+    text(ctx, 'A TWIN-STICK SPACE SALVAGE', 640, 172, 20, '#7df9ff', 800);
+    text(ctx, 'NOVA', 640, 240, 72, '#ffffff', 900);
+    text(ctx, 'SALVAGE', 640, 305, 72, '#ffd23d', 900);
+    text(ctx, 'Blast the rocks. Grab the crystals. Mind the drones.', 640, 360, 18, '#e8f6ff', 600);
+    text(ctx, 'Fill each sector quota to warp on — survive all 5 sectors.', 640, 387, 18, '#e8f6ff', 600);
+    text(ctx, 'WASD / arrows — thrust      Mouse — aim', 640, 435, 17, '#bfe8ff', 700);
+    text(ctx, 'Hold click — shoot      P — pause      M — mute', 640, 462, 17, '#bfe8ff', 700);
+    text(ctx, 'Rocks split when mined. Drones hunt you. Crystals chain combos to x8.', 640, 500, 16, 'rgba(255,255,255,0.65)', 600);
+    text(ctx, 'CLICK OR PRESS ENTER TO PLAY', 640, 548, 22, '#ffd23d', 900);
+    if (s.best > 0) text(ctx, `Best score: ${s.best}`, 640, 580, 16, 'rgba(255,255,255,0.7)', 600);
   }
 
-  function drawPaused(world) {
-    ctx.fillStyle = 'rgba(3,8,5,0.6)';
-    ctx.fillRect(0, 0, CONFIG.world.width, CONFIG.world.height);
-    panel(440, 300, 400, 180);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffe9a8';
-    ctx.font = 'bold 44px sans-serif';
-    ctx.fillText('PAUSED', 640, 372);
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.font = '16px sans-serif';
-    ctx.fillText('Press P or Esc to keep playing', 640, 412);
-    ctx.fillText('Press R to restart', 640, 440);
+  function drawUpgrade(ctx, s) {
+    drawWorld(ctx, s);
+    ctx.fillStyle = 'rgba(6, 4, 20, 0.72)';
+    ctx.fillRect(0, 0, 1280, 720);
+    text(ctx, `SECTOR ${s.sector} COMPLETE!`, 640, 130, 40, '#bff6ff', 900);
+    text(ctx, 'Choose a ship upgrade', 640, 175, 22, '#ffd23d', 700);
+    const cw = 300, ch = 190, gap = 30;
+    const total = cw * 3 + gap * 2;
+    s._cards = [];
+    s.upgradeChoices.forEach((u, i) => {
+      const x = 640 - total / 2 + i * (cw + gap);
+      const y = 230;
+      s._cards.push({ x, y, w: cw, h: ch, index: i });
+      ctx.fillStyle = 'rgba(16, 12, 48, 0.95)';
+      rr(ctx, x, y, cw, ch, 16); ctx.fill();
+      ctx.strokeStyle = '#7df9ff'; ctx.lineWidth = 2;
+      rr(ctx, x, y, cw, ch, 16); ctx.stroke();
+      text(ctx, `${i + 1}`, x + 24, y + 28, 18, '#ffd23d', 900);
+      text(ctx, u.name, x + cw / 2, y + 62, 25, '#ffffff', 800);
+      text(ctx, u.desc, x + cw / 2, y + 108, 18, '#bfe8ff', 600);
+      text(ctx, 'click or press ' + (i + 1), x + cw / 2, y + 152, 15, 'rgba(255,255,255,0.55)', 600);
+    });
+    text(ctx, `Score ${s.score} · Hull ${Math.ceil(s.hull)}/${s.hullMax}`, 640, 480, 18, 'rgba(255,255,255,0.8)', 600);
   }
 
-  function drawGameOver(world) {
-    ctx.fillStyle = 'rgba(10,4,4,0.55)';
-    ctx.fillRect(0, 0, CONFIG.world.width, CONFIG.world.height);
-    panel(340, 170, 600, 460);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ff8f8f';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('THE LIGHT WENT OUT', 640, 225);
-    ctx.fillStyle = '#ffe9a8';
-    ctx.font = 'bold 60px sans-serif';
-    ctx.fillText('GAME OVER', 640, 295);
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.font = 'bold 30px sans-serif';
-    ctx.fillText('Score  ' + world.score, 640, 360);
-    ctx.font = '18px sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.fillText('You held the grove through wave ' + Math.max(1, world.wave) + '  ·  ' + world.kills + ' fiends banished', 640, 398);
-    const isBest = world.score >= world.best && world.score > 0;
-    if (isBest) {
-      ctx.fillStyle = '#ffd23d';
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillText('★ NEW BEST SCORE ★', 640, 436);
-    } else if (world.best > 0) {
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
-      ctx.font = '16px sans-serif';
-      ctx.fillText('Best score: ' + world.best, 640, 436);
-    }
-    ctx.fillStyle = '#8dff9e';
-    ctx.font = 'bold 22px sans-serif';
-    const blink = 0.65 + 0.35 * Math.sin(world.time * 4);
-    ctx.globalAlpha = blink;
-    ctx.fillText('PRESS R OR CLICK TO PLAY AGAIN', 640, 500);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.font = '14px sans-serif';
-    ctx.fillText('Tip: splitters burst into motes — clear them before they reach the tree.', 640, 556);
+  function drawEnd(ctx, s, won) {
+    drawBackground(ctx, s);
+    panel(ctx, 330, 150, 620, 420);
+    text(ctx, won ? 'ALL SECTORS SALVAGED' : 'SHIP DESTROYED', 640, 205, 22, won ? '#7df9ff' : '#ff8a80', 800);
+    text(ctx, won ? 'MISSION COMPLETE!' : 'GAME OVER', 640, 275, 54, '#ffe9a8', 900);
+    text(ctx, `Score  ${s.score}`, 640, 345, 30, '#ffffff', 800);
+    text(ctx, `You reached sector ${s.sector}  ·  ${s.kills} rocks and drones destroyed`, 640, 388, 17, 'rgba(255,255,255,0.8)', 600);
+    text(ctx, `Upgrades: ${s.upgradesTaken.length ? s.upgradesTaken.join(', ') : 'none'}`, 640, 414, 15, 'rgba(255,255,255,0.6)', 600);
+    if (s.score >= s.best && s.score > 0) text(ctx, '★ NEW BEST SCORE ★', 640, 448, 20, '#ffd23d', 900);
+    text(ctx, 'PRESS R OR CLICK TO PLAY AGAIN', 640, 500, 20, '#7df9ff', 800);
+    text(ctx, won ? 'The nebula is yours, salvager.' : 'Tip: big rocks split — mine the small ones first when drones close in.', 640, 540, 15, 'rgba(255,255,255,0.6)', 600);
   }
 
-  render.draw = function draw(world) {
-    ctx.save();
-    if (world.shake > 0) {
-      const s = world.shake * 14;
-      ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
-    }
-    drawBackground(world);
-    drawTree(world);
-    if (world.phase === 'playing' || world.phase === 'paused') {
-      drawPickups(world);
-      for (const e of world.enemies) drawEnemy(e, world);
-      drawBullets(world);
-      drawPlayer(world);
-      drawParticles(world);
-      drawFloaters(world);
-      drawHud(world);
-      drawBanner(world);
-    }
-    if (world.phase === 'title') {
-      drawTitle(world);
-    } else if (world.phase === 'paused') {
-      drawPaused(world);
-    } else if (world.phase === 'gameover') {
-      drawParticles(world);
-      drawFloaters(world);
-      drawGameOver(world);
-    }
-    ctx.restore();
+  function drawPaused(ctx, s) {
+    drawWorld(ctx, s);
+    ctx.fillStyle = 'rgba(6, 4, 20, 0.7)';
+    ctx.fillRect(0, 0, 1280, 720);
+    text(ctx, 'PAUSED', 640, 340, 56, '#bff6ff', 900);
+    text(ctx, 'Press P to resume', 640, 400, 20, '#ffd23d', 700);
+  }
+
+  return {
+    render(ctx, s, mode, paused) {
+      ctx.save();
+      if (s.shake > 0) {
+        const m = s.shake * 14;
+        ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+      }
+      if (mode === 'title') drawTitle(ctx, s);
+      else if (mode === 'upgrade') drawUpgrade(ctx, s);
+      else if (mode === 'victory') drawEnd(ctx, s, true);
+      else if (mode === 'gameover') drawEnd(ctx, s, false);
+      else if (paused) drawPaused(ctx, s);
+      else drawWorld(ctx, s);
+      ctx.restore();
+    },
   };
-
-  return render;
 }

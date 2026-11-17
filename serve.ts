@@ -1,4 +1,4 @@
-// Emberfall — a tiny static server for game/ (Node 22, standard library
+// Nova Salvage — a tiny static server for game/ (Node 22, standard library
 // only), so the entry can be played locally without a build step:
 // `node serve.ts` serves game/ on http://localhost:8080 (or --port <n>).
 // A development convenience, not part of the entry the grader runs.
@@ -51,5 +51,5 @@ createServer((request, response) => {
   response.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream' });
   createReadStream(file).pipe(response);
 }).listen(port, () => {
-  console.log('Emberfall served at http://localhost:' + port);
+  console.log('Nova Salvage served at http://localhost:' + port);
 });

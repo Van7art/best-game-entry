@@ -1,4 +1,4 @@
-// Emberfall — a best-game-01 entry (Node 22, standard library only).
+// Nova Salvage — a best-game-01 entry (Node 22, standard library only).
 //
 // The game lives in game/ beside this file: plain static files a desktop
 // browser loads offline (game/index.html plus its ES modules, no library, no

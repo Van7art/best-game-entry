@@ -1,84 +1,60 @@
-// Emberfall — synthesized sound effects. No audio files ship with the game:
-// every sound is a short WebAudio oscillator phrase built at runtime, so the
-// game loads nothing over the network and stays silent until the player first
-// interacts (browsers block audio before a gesture).
+// Synthesized sound effects + a dreamy synthwave music loop (WebAudio, no files).
 export function createAudio() {
-  const audio = {
-    context: null,
-    muted: false,
-    enabled: true,
-  };
-
-  audio.unlock = function unlock() {
-    if (audio.context) {
-      if (audio.context.state === 'suspended') audio.context.resume();
-      return;
-    }
-    try {
-      const Ctor = window.AudioContext || window.webkitAudioContext;
-      if (!Ctor) {
-        audio.enabled = false;
-        return;
-      }
-      audio.context = new Ctor();
-    } catch (err) {
-      audio.enabled = false;
-    }
-  };
-
-  function tone(freq, seconds, kind, volume, slideTo) {
-    if (!audio.enabled || audio.muted || !audio.context) return;
-    const now = audio.context.currentTime;
-    const osc = audio.context.createOscillator();
-    const gain = audio.context.createGain();
-    osc.type = kind;
-    osc.frequency.setValueAtTime(freq, now);
-    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), now + seconds);
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
-    osc.connect(gain);
-    gain.connect(audio.context.destination);
-    osc.start(now);
-    osc.stop(now + seconds + 0.02);
+  let ctx = null;
+  let muted = false;
+  let musicTimer = null;
+  let step = 0;
+  const BASS = [110, 130.81, 98, 146.83];
+  const LEAD = [440, 523.25, 659.25, 523.25, 587.33, 698.46];
+  function ensure() {
+    if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
   }
-
-  audio.shoot = function shoot() {
-    tone(720, 0.09, 'square', 0.05, 240);
+  function tone(freq, dur, type, vol, slideTo) {
+    if (muted) return;
+    const c = ensure(); if (!c) return;
+    const o = c.createOscillator(); const g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, c.currentTime);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, c.currentTime + dur);
+    g.gain.setValueAtTime(vol, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+    o.connect(g).connect(c.destination);
+    o.start(); o.stop(c.currentTime + dur);
+  }
+  function noise(dur, vol, low) {
+    if (muted) return;
+    const c = ensure(); if (!c) return;
+    const len = Math.floor(c.sampleRate * dur);
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = low || 1200;
+    const g = c.createGain(); g.gain.value = vol;
+    src.connect(f).connect(g).connect(c.destination);
+    src.start();
+  }
+  return {
+    unlock() { ensure(); },
+    toggleMute() { muted = !muted; return muted; },
+    get muted() { return muted; },
+    shoot() { tone(920, 0.07, 'square', 0.04, 520); },
+    hit() { tone(300, 0.05, 'triangle', 0.05, 180); },
+    boom() { noise(0.3, 0.15, 800); tone(80, 0.25, 'sine', 0.12, 35); },
+    pickup() { tone(784, 0.08, 'sine', 0.07); setTimeout(() => tone(1175, 0.12, 'sine', 0.07), 60); },
+    hurt() { tone(140, 0.3, 'sawtooth', 0.12, 50); noise(0.15, 0.1, 500); },
+    sector() { tone(440, 0.16, 'triangle', 0.09); setTimeout(() => tone(660, 0.22, 'triangle', 0.09), 130); },
+    victory() { [440, 554, 659, 880].forEach((f, i) => setTimeout(() => tone(f, 0.3, 'triangle', 0.09), i * 130)); },
+    startMusic() {
+      if (musicTimer) return;
+      musicTimer = setInterval(() => {
+        if (muted) return;
+        step++;
+        if (step % 2 === 0) tone(BASS[(step / 2 | 0) % BASS.length], 0.5, 'sawtooth', 0.02);
+        if (step % 4 === 3) tone(LEAD[step % LEAD.length], 0.3, 'sine', 0.02);
+      }, 280);
+    },
+    stopMusic() { if (musicTimer) { clearInterval(musicTimer); musicTimer = null; } },
   };
-
-  audio.hit = function hit() {
-    tone(190, 0.07, 'triangle', 0.09, 90);
-  };
-
-  audio.kill = function kill() {
-    tone(320, 0.16, 'sawtooth', 0.08, 60);
-    tone(520, 0.1, 'sine', 0.06, 900);
-  };
-
-  audio.hurt = function hurt() {
-    tone(140, 0.35, 'sawtooth', 0.14, 55);
-  };
-
-  audio.pickup = function pickup() {
-    tone(660, 0.1, 'sine', 0.09, 660);
-    setTimeout(() => tone(990, 0.14, 'sine', 0.09, 990), 70);
-  };
-
-  audio.wave = function wave() {
-    tone(262, 0.18, 'triangle', 0.1, 262);
-    setTimeout(() => tone(392, 0.22, 'triangle', 0.1, 392), 140);
-  };
-
-  audio.gameover = function gameover() {
-    tone(392, 0.3, 'triangle', 0.11, 392);
-    setTimeout(() => tone(311, 0.3, 'triangle', 0.11, 311), 240);
-    setTimeout(() => tone(233, 0.55, 'triangle', 0.12, 180), 480);
-  };
-
-  audio.toggleMute = function toggleMute() {
-    audio.muted = !audio.muted;
-    return audio.muted;
-  };
-
-  return audio;
 }
